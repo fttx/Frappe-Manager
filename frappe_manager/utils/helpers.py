@@ -153,8 +153,8 @@ def check_and_display_port_status(ports_to_check: list, exclude=[], bind_ip: str
         exclude (list, optional): List of ports to exclude from checking. Defaults to [].
     """
     if exclude:
-        # Removing elements present in remove_array from original_array
-        ports_to_check = [x for x in exclude if x not in ports_to_check]
+        # Remove ports that are present in the exclude list from ports_to_check
+        ports_to_check = [x for x in ports_to_check if x not in exclude]
 
     if ports_to_check:
         already_binded = check_ports(ports_to_check, bind_ip=bind_ip)
