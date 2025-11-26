@@ -1,26 +1,29 @@
-import importlib
-import json
-from cryptography.hazmat.backends import default_backend
-from datetime import datetime
-from cryptography import x509
-from io import StringIO
-import sys
-from typing import Optional
-from frappe_manager.utils.docker import run_command_with_exit_code
-import requests
-import subprocess
-import platform
-import time
-import secrets
 import grp
-from pathlib import Path
+import importlib
 import importlib.resources as pkg_resources
+import json
+import platform
+import secrets
+import subprocess
+import sys
+import time
+from datetime import datetime
+from io import StringIO
+from pathlib import Path
+from typing import Optional
+
+import requests
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 from rich.console import Console
 from rich.traceback import Traceback
-from frappe_manager.logger import log
+
+from frappe_manager import (CLI_BENCHES_DIRECTORY, CLI_DEFAULT_DELIMETER,
+                            CLI_SITE_NAME_DELIMETER)
 from frappe_manager.display_manager.DisplayManager import richprint
+from frappe_manager.logger import log
 from frappe_manager.site_manager import PREBAKED_SITE_APPS
-from frappe_manager import CLI_BENCHES_DIRECTORY, CLI_DEFAULT_DELIMETER, CLI_SITE_NAME_DELIMETER
+from frappe_manager.utils.docker import run_command_with_exit_code
 
 
 def remove_zombie_subprocess_process(process):
@@ -52,7 +55,7 @@ def remove_zombie_subprocess_process(process):
         logger.cleanup("-" * 20)
 
 
-def is_port_in_use(port):
+def is_port_in_use(port, bind_ip: str | None = None):
     """
     Check if a port is in use or not.
 
@@ -64,13 +67,45 @@ def is_port_in_use(port):
     """
     import psutil
 
-    for conn in psutil.net_connections():
-        if conn.laddr.port == port and conn.status == "LISTEN":
-            return True
+    # Iterate over all inet connections and consider listen sockets only
+    for conn in psutil.net_connections(kind="inet"):
+        try:
+            laddr = conn.laddr
+            # laddr can be empty for some connection types
+            if not laddr:
+                continue
+
+            # laddr may be a tuple (ip, port) or an object with .ip/.port depending on psutil version
+            try:
+                local_ip = laddr.ip
+                local_port = laddr.port
+            except AttributeError:
+                # fallback for older psutil versions
+                local_ip, local_port = laddr
+
+            if local_port != port or conn.status != "LISTEN":
+                continue
+
+            # If caller didn't provide a bind_ip, keep old behaviour: any listening socket on the port
+            if not bind_ip:
+                return True
+
+            # Treat wildcard listeners as occupying all IPs
+            if local_ip in ("0.0.0.0", "::"):
+                return True
+
+            # Otherwise only consider connection if it matches the requested bind IP
+            if local_ip == bind_ip:
+                return True
+
+        except Exception:
+            # Be defensive: skip connections that raise unexpected errors
+            continue
+
     return False
 
 
-def check_ports(ports):
+def check_ports(ports, bind_ip: str | None = None):
     """
     Checks if the ports are in use.
 
@@ -85,24 +120,31 @@ def check_ports(ports):
     already_binded = []
     for port in ports:
         if current_system == "Darwin":
-            # Mac Os
-            # check port using lsof command
+            # Mac OS: use lsof but filter by bind_ip when provided
             cmd = f"lsof -iTCP:{port} -sTCP:LISTEN -P -n"
             try:
-                output = subprocess.run(cmd, check=True, shell=True, capture_output=True)
-                if output.returncode == 0:
-                    already_binded.append(port)
-            except subprocess.CalledProcessError as e:
+                output = subprocess.run(cmd, check=False, shell=True, capture_output=True, text=True)
+                stdout = output.stdout or ""
+                if stdout:
+                    if bind_ip:
+                        # check if any listening line references the requested IP
+                        # lsof output contains entries like 'TCP 192.0.2.1:80 (LISTEN)'
+                        if f"{bind_ip}:{port}" in stdout or f"{bind_ip}.{port}" in stdout:
+                            already_binded.append(port)
+                    else:
+                        # port is in use by any IP
+                        already_binded.append(port)
+            except subprocess.CalledProcessError:
                 pass
         else:
             # Linux or any other machines
-            if is_port_in_use(port):
+            if is_port_in_use(port, bind_ip=bind_ip):
                 already_binded.append(port)
 
     return already_binded
 
 
-def check_and_display_port_status(ports_to_check: list, exclude=[]):
+def check_and_display_port_status(ports_to_check: list, exclude=[], bind_ip: str | None = None):
     """
     Check if the specified ports are already binded and display a message if they are.
 
@@ -115,7 +157,7 @@ def check_and_display_port_status(ports_to_check: list, exclude=[]):
         ports_to_check = [x for x in exclude if x not in ports_to_check]
 
     if ports_to_check:
-        already_binded = check_ports(ports_to_check)
+        already_binded = check_ports(ports_to_check, bind_ip=bind_ip)
         if already_binded:
             richprint.exit(
                 f"Ports {', '.join(map(str, already_binded))} {'are' if len(already_binded) > 1 else 'is'} currently in use. Please free up these ports."
@@ -132,7 +174,8 @@ def generate_random_text(length=50):
     Returns:
     str: The randomly generated text.
     """
-    import random, string
+    import random
+    import string
 
     alphanumeric_chars = string.ascii_letters + string.digits
     return "".join(random.choice(alphanumeric_chars) for _ in range(length))

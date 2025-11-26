@@ -1,36 +1,28 @@
-import shutil
-import platform
 import os
-from jinja2 import Template
-import typer
+import platform
+import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, Optional
+
+import typer
+from jinja2 import Template
 
 from frappe_manager import CLI_DIR, CLI_SERVICES_DIRECTORY
-from frappe_manager.compose_project.compose_project import ComposeProject
-from frappe_manager.services_manager.database_service_manager import (
-    DatabaseServerServiceInfo,
-    DatabaseServiceManager,
-    MariaDBManager,
-)
-from frappe_manager.services_manager.services_exceptions import (
-    ServicesComposeNotExist,
-    ServicesException,
-    ServicesNotCreated,
-)
-from frappe_manager.display_manager.DisplayManager import richprint
 from frappe_manager.compose_manager.ComposeFile import ComposeFile
-from frappe_manager.ssl_manager.nginxproxymanager import NginxProxyManager
-from frappe_manager.utils.helpers import (
-    get_current_fm_version,
-    get_template_path,
-    random_password_generate,
-    check_and_display_port_status,
-    get_unix_groups,
-)
-from frappe_manager.utils.docker import host_run_cp
+from frappe_manager.compose_project.compose_project import ComposeProject
+from frappe_manager.display_manager.DisplayManager import richprint
 from frappe_manager.docker_wrapper.DockerException import DockerException
+from frappe_manager.services_manager.database_service_manager import (
+    DatabaseServerServiceInfo, DatabaseServiceManager, MariaDBManager)
+from frappe_manager.services_manager.services_exceptions import (
+    ServicesComposeNotExist, ServicesException, ServicesNotCreated)
+from frappe_manager.ssl_manager.nginxproxymanager import NginxProxyManager
+from frappe_manager.utils.docker import host_run_cp
+from frappe_manager.utils.helpers import (check_and_display_port_status,
+                                          get_current_fm_version,
+                                          get_template_path, get_unix_groups,
+                                          random_password_generate)
 
 
 class ServicesManager:
@@ -265,5 +257,6 @@ class ServicesManager:
         ports = [80, 443]
         richprint.change_head(f"Verifying ports {', '.join(map(str, ports))} availability.")
         docker_used_ports = self.compose_project.get_host_port_binds()
-        check_and_display_port_status(ports, exclude=docker_used_ports)
+        bind_ip = os.environ.get("FM_BIND_IP")
+        check_and_display_port_status(ports, exclude=docker_used_ports, bind_ip=bind_ip)
         richprint.print(f"Global services will utilize ports {', '.join(map(str, ports))}.")
